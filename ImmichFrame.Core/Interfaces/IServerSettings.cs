@@ -66,6 +66,8 @@
         public bool PlayAudio { get; }
         public string Layout { get; }
         public string Language { get; }
+        public int AssetBatchSize { get; }
+        public bool ClientPersistAssets { get; }
 
         public void Validate();
     }

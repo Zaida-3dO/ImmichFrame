@@ -2,7 +2,15 @@
 	import * as api from '$lib/index';
 	import ProgressBar from '$lib/components/elements/progress-bar.svelte';
 	import { slideshowStore } from '$lib/stores/slideshow.store';
-	import { clientIdentifierStore, authSecretStore } from '$lib/stores/persist.store';
+	import {
+		clientIdentifierStore,
+		authSecretStore,
+		serverSessionIdStore,
+		assetBacklogStore,
+		assetHistoryStore,
+		displayingAssetsStore,
+		clearPersistedStore
+	} from '$lib/stores/persist.store';
 	import { onDestroy, onMount, setContext, tick } from 'svelte';
 	import OverlayControls from '../elements/overlay-controls.svelte';
 	import AssetComponent from '../elements/asset-component.svelte';
@@ -135,9 +143,36 @@
 		});
 	}
 
+	// persist helpers - save to localStorage when the corresponding option is enabled
+	function persistBacklog() {
+		if ($configStore.clientPersistAssets) {
+			assetBacklogStore.set(assetBacklog);
+		}
+	}
+
+	function persistHistory() {
+		if ($configStore.clientPersistAssets) {
+			assetHistoryStore.set(assetHistory);
+		}
+	}
+
+	function persistDisplaying() {
+		if ($configStore.clientPersistAssets) {
+			displayingAssetsStore.set(displayingAssets);
+		}
+	}
+
+	// Set the currently-displayed assets, persist them, and load their media.
+	async function showAssets(next: api.AssetResponseDto[]) {
+		displayingAssets = next;
+		persistDisplaying();
+		await updateAssetPromises();
+		assetsState = await pickAssets(next);
+	}
+
 	async function loadAssets() {
 		try {
-			let assetRequest = await api.getAssets();
+			let assetRequest = await api.getAssets({ clientIdentifier: $clientIdentifierStore });
 
 			if (assetRequest.status != 200) {
 				if (assetRequest.status == 401) {
@@ -151,6 +186,7 @@
 			assetBacklog = assetRequest.data.filter(
 				(asset) => isImageAsset(asset) || isVideoAsset(asset)
 			);
+			persistBacklog();
 		} catch {
 			error = true;
 		}
@@ -230,8 +266,11 @@
 			return;
 		}
 
-		const useSplit = shouldUseSplitView(assetBacklog);
-		const next = assetBacklog.splice(0, useSplit ? 2 : 1);
+		const candidates = assetBacklog.slice(0, 3);
+		const selectedIndices = selectAssetsForDisplay($configStore.layout, candidates);
+		const next = selectedIndices.map((i) => assetBacklog[i]);
+		assetBacklog = removeAtIndices(assetBacklog, selectedIndices);
+		persistBacklog();
 
 		if (displayingAssets.length) {
 			assetHistory.push(...displayingAssets);
@@ -240,10 +279,9 @@
 		if (assetHistory.length > 250) {
 			assetHistory = assetHistory.slice(-250);
 		}
+		persistHistory();
 
-		displayingAssets = next;
-		await updateAssetPromises();
-		assetsState = await pickAssets(next);
+		await showAssets(next);
 	}
 
 	async function getPreviousAssets() {
@@ -251,16 +289,24 @@
 			return;
 		}
 
-		const useSplit = shouldUseSplitView(assetHistory.slice(-2));
-		const next = assetHistory.splice(useSplit ? -2 : -1);
+		// Take up to 3 most-recent history entries, reversed so the selection logic
+		// treats the most recently shown asset as the "first" candidate.
+		const historyLength = assetHistory.length;
+		const candidates = assetHistory.slice(historyLength - Math.min(3, historyLength)).reverse();
+		const selectedIndices = selectAssetsForDisplay($configStore.layout, candidates);
+
+		// Convert candidate indices back to history positions and restore display order.
+		const historyIndices = selectedIndices.map((i) => historyLength - 1 - i).reverse();
+		const next = historyIndices.map((i) => assetHistory[i]);
+		assetHistory = removeAtIndices(assetHistory, historyIndices);
+		persistHistory();
 
 		if (displayingAssets.length) {
 			assetBacklog.unshift(...displayingAssets);
+			persistBacklog();
 		}
 
-		displayingAssets = next;
-		await updateAssetPromises();
-		assetsState = await pickAssets(next);
+		await showAssets(next);
 	}
 
 	function isPortrait(asset: api.AssetResponseDto) {
@@ -277,15 +323,53 @@
 		return assetHeight > assetWidth;
 	}
 
-	function shouldUseSplitView(assets: api.AssetResponseDto[]): boolean {
-		return (
-			$configStore.layout?.trim().toLowerCase() === 'splitview' &&
-			assets.length > 1 &&
-			isImageAsset(assets[0]) &&
-			isImageAsset(assets[1]) &&
-			isPortrait(assets[0]) &&
-			isPortrait(assets[1])
-		);
+	function removeAtIndices<T>(arr: T[], indicesToRemove: number[]): T[] {
+		const skipSet = new Set(indicesToRemove);
+		return arr.filter((_, i) => !skipSet.has(i));
+	}
+
+	// Selects which assets to display based on layout and orientation.
+	// For splitview, tries to pair portrait images together, to be shown side by side.
+	// Landscape images (and videos, which isPortrait treats as non-portrait) are shown alone.
+	function selectAssetsForDisplay(
+		layout: string | null | undefined,
+		candidates: api.AssetResponseDto[]
+	): number[] {
+		if (candidates.length < 1) {
+			return [];
+		}
+		if (candidates.length === 1 || layout?.trim().toLowerCase() !== 'splitview') {
+			return [0];
+		}
+
+		const isImage0Portrait = isPortrait(candidates[0]);
+		const isImage1Portrait = candidates.length > 1 ? isPortrait(candidates[1]) : false;
+		const isImage2Portrait = candidates.length > 2 ? isPortrait(candidates[2]) : false;
+
+		if (!isImage0Portrait) {
+			// first image is landscape, show it alone
+			return [0];
+		}
+
+		// otherwise, first image is portrait
+
+		if (candidates.length > 1 && isImage1Portrait) {
+			// pair with second if it's also portrait
+			return [0, 1];
+		}
+
+		if (candidates.length > 2 && isImage2Portrait) {
+			// pair with third if it's portrait (skip landscape second)
+			return [0, 2];
+		}
+
+		if (candidates[1] != null) {
+			// no portrait pair found, show second (landscape) instead
+			return [1];
+		}
+
+		// Unreachable state, but fallback to returning the first image.
+		return [0];
 	}
 
 	function hasBirthday(assets: api.AssetResponseDto[]) {
@@ -460,7 +544,45 @@
 			}
 		});
 
-		getNextAssets();
+		// Detect a server restart: the server's asset-routing tracker (BloomFilter) resets on
+		// restart, so any persisted assets can no longer be resolved and must be dropped.
+		const currentServerSessionId = $configStore.serverSessionId;
+		const sessionChanged =
+			currentServerSessionId == null || $serverSessionIdStore !== currentServerSessionId;
+		if (sessionChanged) {
+			assetBacklogStore.set([]);
+			assetHistoryStore.set([]);
+			displayingAssetsStore.set([]);
+			if (currentServerSessionId != null){
+				serverSessionIdStore.set(currentServerSessionId);
+			} else {
+				clearPersistedStore('serverSessionId');
+			}
+		}
+
+		// Restore the persisted queue, currently-displayed assets, and history.
+		let restoredDisplaying = false;
+		if ($configStore.clientPersistAssets && !sessionChanged) {
+			const storedBacklog = $assetBacklogStore;
+			if (storedBacklog?.length) {
+				assetBacklog = storedBacklog;
+			}
+			const storedDisplaying = $displayingAssetsStore;
+			if (storedDisplaying?.length) {
+				displayingAssets = storedDisplaying;
+				restoredDisplaying = true;
+			}
+			const storedHistory = $assetHistoryStore;
+			if (storedHistory?.length) {
+				assetHistory = storedHistory;
+			}
+		}
+
+		if (restoredDisplaying) {
+			showAssets(displayingAssets);
+		} else {
+			getNextAssets();
+		}
 
 		return () => {
 			window.removeEventListener('mousemove', showCursor);

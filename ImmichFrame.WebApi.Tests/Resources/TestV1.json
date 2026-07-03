@@ -9,6 +9,8 @@
     "ImageFill": true,
     "PlayAudio": true,
     "Layout": "Layout_TEST",
+    "AssetBatchSize": 7,
+    "ClientPersistAssets": true,
     "DownloadImages": true,
     "ShowMemories": true,
     "ShowFavorites": true,

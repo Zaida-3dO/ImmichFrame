@@ -104,6 +104,11 @@ General:
   PlayAudio: false  # boolean
   # Allow two portrait images to be displayed next to each other
   Layout: 'splitview'  # single | splitview
+  # Number of assets fetched per request from the server. Larger values show more distinct images before the random pool reshuffles, at the cost of a bigger initial fetch. Clamped to Immich's random-search range of 1-1000.
+  AssetBatchSize: 25  # int (1-1000)
+  # Persist the asset queue, current assets, and history (back button) in client localStorage so a refresh/reload resumes in place instead of re-fetching.
+  # Note: a server restart clears the persisted assets on all clients (they can no longer be resolved after a restart).
+  ClientPersistAssets: false  # boolean
 
 # multiple accounts permitted
 Accounts:
